@@ -114,15 +114,9 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     // first release everything
     if (contextData->changeBackendCounter == 1)
     {
-        if (state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler)
+        if (state.currentFG != nullptr && state.currentFG->IsActive() && state.activeFgInput == FGInput::Upscaler)
         {
-            // Don't Deactivate or DestroyFGContext during upscaler switch.
-            // Any FG state change (Deactivate/Destroy) causes FSR FG's swapchain
-            // frame pacing to deadlock on the next frame. Instead, keep FG running
-            // with the old upscaler's resources during the switch. The old upscaler
-            // survives for 2 seconds via DelayedDestroy, giving FG plenty of time.
-            // After the new upscaler is ready, FGchanged triggers EvaluateState which
-            // handles Deactivate → 10-frame pause → Activate with new resources.
+            state.currentFG->DestroyFGContext();
             state.FGchanged = true;
             state.ClearCapturedHudlesses = true;
         }
