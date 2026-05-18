@@ -20,6 +20,7 @@
 #include <detours/detours.h>
 
 #include <d3d12.h>
+#include <wrl/client.h>
 #include <misc/IdentifyGpu.h>
 #include <menu/menu_overlay_dx.h>
 
@@ -1033,7 +1034,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (State::Instance().currentCommandQueue != nullptr && fg != nullptr && !fg->IsActive())
         {
             auto cq = State::Instance().currentCommandQueue;
-            ComPtr<ID3D12Fence> fence;
+            Microsoft::WRL::ComPtr<ID3D12Fence> fence;
             if (SUCCEEDED(State::Instance().currentD3D12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
             {
                 HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
