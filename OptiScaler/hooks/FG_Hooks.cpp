@@ -20,7 +20,6 @@
 #include <detours/detours.h>
 
 #include <d3d12.h>
-#include <wrl/client.h>
 #include <misc/IdentifyGpu.h>
 #include <menu/menu_overlay_dx.h>
 
@@ -1022,33 +1021,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
 
     // If FG is not active (e.g. deactivated during save thumbnail), bypass all FG processing
-    // to prevent deadlocks when the game captures a screenshot for the save file.
-    // Flush the GPU queue first to ensure all pending FG work is complete before
-    // the FSR FG swapchain's internal frame pacing tries to synchronize.
+    // to prevent deadlocks when the game captures a screenshot for the save file
     auto fg = State::Instance().currentFG;
     if (fg == nullptr || !fg->IsActive() || fg->IsPaused())
     {
-        // GPU sync: wait for the command queue to finish all pending work.
-        // This prevents the FSR FG swapchain's frame pacing from blocking on
-        // unfinished GPU commands when FG has been deactivated mid-stream.
-        if (State::Instance().currentCommandQueue != nullptr && fg != nullptr && !fg->IsActive())
-        {
-            auto cq = State::Instance().currentCommandQueue;
-            Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-            if (SUCCEEDED(State::Instance().currentD3D12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
-            {
-                HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                if (event != nullptr)
-                {
-                    cq->Signal(fence.Get(), 1);
-                    fence->SetEventOnCompletion(1, event);
-                    WaitForSingleObject(event, 100); // 100ms timeout to avoid infinite hang
-                    CloseHandle(event);
-                    LOG_DEBUG("FG inactive: GPU queue flushed before FG swapchain present");
-                }
-            }
-        }
-
         Hudfix_Dx12::PresentEnd();
 
         if (pPresentParameters == nullptr)

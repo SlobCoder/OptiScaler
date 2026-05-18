@@ -727,7 +727,20 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
 
     D3D12Hooks::SetRootSignatureTracking(true);
 
-    state.FGchanged = true;
+    // Don't trigger FG state change for thumbnail/low-resolution features.
+    // Unity games (e.g. Fall of Avalon) render save thumbnails at tiny resolutions
+    // (320x180) which creates a temporary upscaler. Setting FGchanged here causes
+    // FG deactivation, which freezes the game due to FSR FG's swapchain frame pacing.
+    // Keeping FG active during the thumbnail is safe — the dispatch will use wrong
+    // resources for 1-2 frames but this is invisible (tiny render-to-texture).
+    if (feature != nullptr && feature->DisplayWidth() <= 640 && feature->DisplayHeight() <= 360)
+    {
+        LOG_INFO("Thumbnail feature ({}x{}), skipping FGchanged", feature->DisplayWidth(), feature->DisplayHeight());
+    }
+    else
+    {
+        state.FGchanged = true;
+    }
 
     return NVSDK_NGX_Result_Success;
 }
@@ -820,7 +833,24 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
         return NVSDK_NGX_Result_Success;
 
     auto handleId = InHandle->Id;
-    State::Instance().FGchanged = true;
+
+    // Check if there's a thumbnail feature alive (low-res). If so, this ReleaseFeature
+    // is part of a save thumbnail sequence — don't touch FG state.
+    bool hasThumbnailFeature = false;
+    for (auto& [id, ctx] : Dx12Contexts)
+    {
+        auto* f = ctx.feature.get();
+        if (f != nullptr && f->DisplayWidth() <= 640 && f->DisplayHeight() <= 360)
+        {
+            hasThumbnailFeature = true;
+            LOG_INFO("Thumbnail feature found ({}x{}) during release of {}, skipping FG cleanup",
+                     f->DisplayWidth(), f->DisplayHeight(), handleId);
+            break;
+        }
+    }
+
+    if (!hasThumbnailFeature)
+        State::Instance().FGchanged = true;
 
     // Clean up framegen
     // Only deactivate FG instead of destroying the context.
@@ -828,7 +858,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     // reduced resolution (e.g. Unity games like Fall of Avalon).
     // The FG context is preserved and reactivated when the upscaler is recreated
     // at normal resolution. Full destruction still happens on shutdown or swapchain change.
-    if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
+    // During a save thumbnail sequence, skip FG cleanup entirely.
+    if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler && !hasThumbnailFeature)
     {
         if (State::Instance().currentFG->IsActive())
             State::Instance().currentFG->Deactivate();
