@@ -417,6 +417,11 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY_UE(ghostrunner2, GameQuirk::ForceUnrealEngine),
     QUIRK_ENTRY("soulstice.exe", GameQuirk::ForceUnrealEngine, GameQuirk::ForceAutoExposure),
 
+    // Fall of Avalon (Unity)
+    // Save thumbnails cause resolution drop (320x180) which destroys/recreates FG context
+    // resulting in broken frame tracking and crash
+    QUIRK_ENTRY("fall of avalon.exe", GameQuirk::FastFeatureReset, GameQuirk::ForceAutoExposure),
+
     // VULKAN
     // ------
 
