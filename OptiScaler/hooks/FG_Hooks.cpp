@@ -1021,16 +1021,31 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
 
     // If FG is not active (e.g. deactivated during save thumbnail), bypass all FG processing
-    // to prevent deadlocks when the game captures a screenshot for the save file
+    // to prevent deadlocks when the game captures a screenshot for the save file.
+    // Use the real swapchain directly instead of going through FSR FG's swapchain wrapper,
+    // because FSR FG's internal frame pacing can block on GPU fences even when FG is disabled.
     auto fg = State::Instance().currentFG;
     if (fg == nullptr || !fg->IsActive() || fg->IsPaused())
     {
         Hudfix_Dx12::PresentEnd();
 
-        if (pPresentParameters == nullptr)
-            return o_FGSCPresent(This, SyncInterval, Flags);
+        auto realSC = State::Instance().currentRealSwapchain;
+        if (realSC != nullptr)
+        {
+            LOG_DEBUG("FG inactive, presenting via real swapchain");
+            if (pPresentParameters == nullptr)
+                return realSC->Present(SyncInterval, Flags);
+            else
+                return ((IDXGISwapChain1*)realSC)->Present1(SyncInterval, Flags, pPresentParameters);
+        }
         else
-            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+        {
+            LOG_DEBUG("FG inactive, no real swapchain, fallback to FG swapchain");
+            if (pPresentParameters == nullptr)
+                return o_FGSCPresent(This, SyncInterval, Flags);
+            else
+                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+        }
     }
 
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
