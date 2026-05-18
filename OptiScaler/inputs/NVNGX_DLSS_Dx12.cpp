@@ -727,7 +727,33 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
 
     D3D12Hooks::SetRootSignatureTracking(true);
 
-    state.FGchanged = true;
+    // Don't trigger FG state change during save thumbnail sequences.
+    // Unity games (e.g. Fall of Avalon) render save thumbnails at tiny resolutions
+    // (320x180) which creates a temporary upscaler. The sequence is:
+    //   1. Thumbnail upscaler created (320x180)
+    //   2. Main upscaler released
+    //   3. Replacement normal-res upscaler created (3840x2160)
+    // We must suppress FGchanged for ALL THREE steps, not just step 1,
+    // otherwise the replacement upscaler triggers FG deactivation → freeze.
+    // The flag is set in step 1 and cleared in step 3.
+    if (feature != nullptr && feature->DisplayWidth() <= 640 && feature->DisplayHeight() <= 360)
+    {
+        LOG_INFO("Thumbnail feature ({}x{}), setting thumbnailSaveActive and skipping FGchanged",
+                 feature->DisplayWidth(), feature->DisplayHeight());
+        state.thumbnailSaveActive = true;
+    }
+    else if (state.thumbnailSaveActive)
+    {
+        LOG_INFO("Replacement upscaler created after thumbnail ({}x{}), skipping FGchanged, clearing thumbnailSaveActive",
+                 feature != nullptr ? feature->DisplayWidth() : 0,
+                 feature != nullptr ? feature->DisplayHeight() : 0);
+        state.thumbnailSaveActive = false;
+        // Don't set FGchanged — FG stays active throughout the save sequence
+    }
+    else
+    {
+        state.FGchanged = true;
+    }
 
     return NVSDK_NGX_Result_Success;
 }
@@ -816,17 +842,54 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 {
     LOG_FUNC();
 
+    State& state = State::Instance();
+
     if (!InHandle)
         return NVSDK_NGX_Result_Success;
 
     auto handleId = InHandle->Id;
-    State::Instance().FGchanged = true;
+
+    // Check if we're in a save thumbnail sequence. If the thumbnailSaveActive
+    // flag is set, or a thumbnail feature still exists in contexts, skip FG cleanup.
+    // The flag covers the case where the thumbnail was already released but the
+    // replacement upscaler hasn't been created yet.
+    bool skipFgCleanup = state.thumbnailSaveActive;
+    if (!skipFgCleanup)
+    {
+        for (auto& [id, ctx] : Dx12Contexts)
+        {
+            auto* f = ctx.feature.get();
+            if (f != nullptr && f->DisplayWidth() <= 640 && f->DisplayHeight() <= 360)
+            {
+                skipFgCleanup = true;
+                LOG_INFO("Thumbnail feature found ({}x{}) during release of {}, skipping FG cleanup",
+                         f->DisplayWidth(), f->DisplayHeight(), handleId);
+                break;
+            }
+        }
+    }
+    else
+    {
+        LOG_INFO("thumbnailSaveActive flag set during release of {}, skipping FG cleanup", handleId);
+    }
+
+    if (!skipFgCleanup)
+        state.FGchanged = true;
 
     // Clean up framegen
-    if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
+    // Only deactivate FG instead of destroying the context.
+    // Destroying causes deadlocks in games that render save thumbnails at
+    // reduced resolution (e.g. Unity games like Fall of Avalon).
+    // The FG context is preserved and reactivated when the upscaler is recreated
+    // at normal resolution. Full destruction still happens on shutdown or swapchain change.
+    // During a save thumbnail sequence, skip FG cleanup entirely.
+    if (state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler && !skipFgCleanup)
     {
-        State::Instance().currentFG->DestroyFGContext();
-        State::Instance().ClearCapturedHudlesses = true;
+        if (state.currentFG->IsActive())
+            state.currentFG->Deactivate();
+
+        state.FGchanged = true;
+        state.ClearCapturedHudlesses = true;
         UpscalerInputsDx12::Reset();
     }
 
