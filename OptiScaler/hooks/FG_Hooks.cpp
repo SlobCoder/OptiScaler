@@ -1020,6 +1020,19 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
     }
 
+    // If FG is not active (e.g. deactivated during save thumbnail), bypass all FG processing
+    // to prevent deadlocks when the game captures a screenshot for the save file
+    auto fg = State::Instance().currentFG;
+    if (fg == nullptr || !fg->IsActive() || fg->IsPaused())
+    {
+        Hudfix_Dx12::PresentEnd();
+
+        if (pPresentParameters == nullptr)
+            return o_FGSCPresent(This, SyncInterval, Flags);
+        else
+            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+    }
+
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
 
     if (willPresent)
@@ -1043,7 +1056,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         UpscalerTimeDx12::ReadUpscalingTime(State::Instance().currentCommandQueue);
     }
 
-    auto fg = State::Instance().currentFG;
+    // fg already declared above in early-exit bypass
     bool mutexUsed = false;
     if (willPresent && fg != nullptr && fg->IsActive() && !fg->IsPaused() &&
         Config::Instance()->FGUseMutexForSwapchain.value_or_default() && fg->Mutex.getOwner() != 2)
