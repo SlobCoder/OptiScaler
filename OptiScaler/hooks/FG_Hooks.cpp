@@ -1022,30 +1022,38 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     // If FG is not active (e.g. deactivated during save thumbnail), bypass all FG processing
     // to prevent deadlocks when the game captures a screenshot for the save file.
-    // Use the real swapchain directly instead of going through FSR FG's swapchain wrapper,
-    // because FSR FG's internal frame pacing can block on GPU fences even when FG is disabled.
+    // Flush the GPU queue first to ensure all pending FG work is complete before
+    // the FSR FG swapchain's internal frame pacing tries to synchronize.
     auto fg = State::Instance().currentFG;
     if (fg == nullptr || !fg->IsActive() || fg->IsPaused())
     {
+        // GPU sync: wait for the command queue to finish all pending work.
+        // This prevents the FSR FG swapchain's frame pacing from blocking on
+        // unfinished GPU commands when FG has been deactivated mid-stream.
+        if (State::Instance().currentCommandQueue != nullptr && fg != nullptr && !fg->IsActive())
+        {
+            auto cq = State::Instance().currentCommandQueue;
+            ComPtr<ID3D12Fence> fence;
+            if (SUCCEEDED(State::Instance().currentD3D12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+            {
+                HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                if (event != nullptr)
+                {
+                    cq->Signal(fence.Get(), 1);
+                    fence->SetEventOnCompletion(1, event);
+                    WaitForSingleObject(event, 100); // 100ms timeout to avoid infinite hang
+                    CloseHandle(event);
+                    LOG_DEBUG("FG inactive: GPU queue flushed before FG swapchain present");
+                }
+            }
+        }
+
         Hudfix_Dx12::PresentEnd();
 
-        auto realSC = State::Instance().currentRealSwapchain;
-        if (realSC != nullptr)
-        {
-            LOG_DEBUG("FG inactive, presenting via real swapchain");
-            if (pPresentParameters == nullptr)
-                return realSC->Present(SyncInterval, Flags);
-            else
-                return ((IDXGISwapChain1*)realSC)->Present1(SyncInterval, Flags, pPresentParameters);
-        }
+        if (pPresentParameters == nullptr)
+            return o_FGSCPresent(This, SyncInterval, Flags);
         else
-        {
-            LOG_DEBUG("FG inactive, no real swapchain, fallback to FG swapchain");
-            if (pPresentParameters == nullptr)
-                return o_FGSCPresent(This, SyncInterval, Flags);
-            else
-                return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
-        }
+            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
     }
 
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
