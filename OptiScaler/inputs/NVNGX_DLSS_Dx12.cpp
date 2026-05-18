@@ -823,9 +823,17 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     State::Instance().FGchanged = true;
 
     // Clean up framegen
+    // Only deactivate FG instead of destroying the context.
+    // Destroying causes deadlocks in games that render save thumbnails at
+    // reduced resolution (e.g. Unity games like Fall of Avalon).
+    // The FG context is preserved and reactivated when the upscaler is recreated
+    // at normal resolution. Full destruction still happens on shutdown or swapchain change.
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
     {
-        State::Instance().currentFG->DestroyFGContext();
+        if (State::Instance().currentFG->IsActive())
+            State::Instance().currentFG->Deactivate();
+
+        State::Instance().FGchanged = true;
         State::Instance().ClearCapturedHudlesses = true;
         UpscalerInputsDx12::Reset();
     }
