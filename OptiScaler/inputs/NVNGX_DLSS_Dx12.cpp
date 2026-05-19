@@ -766,11 +766,13 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     }
     else
     {
-        // Check if FG is already active. If so, this is a resolution change or
-        // upscaler re-creation — suppress FGchanged to avoid FSR FG deadlock.
-        // If FG is not yet active (first feature), set FGchanged normally.
+        // Check if FG is already active AND SoftFGToggle quirk is set.
+        // If so, this is a resolution change or upscaler re-creation — suppress
+        // FGchanged to avoid FSR FG deadlock. Only applies to games with the quirk.
+        // Without the quirk, FGchanged is set normally for all games.
         bool fgAlreadyActive = (state.currentFG != nullptr && state.currentFG->IsActive());
-        if (fgAlreadyActive)
+        bool useSoftToggle = (state.gameQuirks & GameQuirk::SoftFGToggle);
+        if (fgAlreadyActive && useSoftToggle)
         {
             // Upscaler re-creation while FG is running (resolution change).
             // Set transition flag instead of FGchanged to avoid FSR FG deadlock.
@@ -781,8 +783,8 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
         }
         else
         {
-            // First upscaler creation or FG not yet running — set FGchanged normally
-            // so FG can be initialized.
+            // First upscaler creation, FG not yet running, or no SoftFGToggle quirk —
+            // set FGchanged normally.
             state.FGchanged = true;
             LOG_INFO("New upscaler feature ({}x{}), setting FGchanged",
                      feature != nullptr ? feature->DisplayWidth() : 0,

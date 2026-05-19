@@ -2,6 +2,7 @@
 
 #include "FSRFG_Dx12.h"
 #include <State.h>
+#include <Quirks.h>
 
 #include <hudfix/Hudfix_Dx12.h>
 #include <menu/menu_overlay_dx.h>
@@ -1153,13 +1154,35 @@ void FSRFG_Dx12::Activate()
 {
     if (_fgContext != nullptr && _swapChain != nullptr && !_isActive)
     {
-        // Don't call D3D12_Configure(Enabled: true) — it can deadlock FSR FG's
-        // swapchain wrapper. Just set _isActive = true directly. The Dispatch()
-        // function will handle frame generation, and FGPresent will no longer
-        // bypass when IsActive() returns true.
-        _isActive = true;
-        _lastDispatchedFrame = 0;
-        LOG_INFO("Soft activate: _isActive = true (no D3D12_Configure)");
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+        {
+            // Soft activate: don't call D3D12_Configure(Enabled: true) as it
+            // deadlocks FSR FG's swapchain wrapper in some games.
+            _isActive = true;
+            _lastDispatchedFrame = 0;
+            LOG_INFO("Soft activate: _isActive = true (no D3D12_Configure)");
+        }
+        else
+        {
+            // Original path: tell FSR FG to enable frame generation
+            ffxConfigureDescFrameGeneration fgConfig = {};
+            fgConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+            fgConfig.frameGenerationEnabled = true;
+            fgConfig.swapChain = _swapChain;
+            fgConfig.presentCallback = nullptr;
+            fgConfig.HUDLessColor = FfxApiResource({});
+
+            auto result = FfxApiProxy::D3D12_Configure(&_fgContext, &fgConfig.header);
+
+            if (result == FFX_API_RETURN_OK)
+            {
+                _isActive = true;
+                _lastDispatchedFrame = 0;
+            }
+
+            LOG_INFO("D3D12_Configure Enabled: true, result: {} ({})", magic_enum::enum_name((FfxApiReturnCodes) result),
+                     (UINT) result);
+        }
     }
 }
 
@@ -1263,14 +1286,19 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
         // If there is a change deactivate it
         else if (State::Instance().FGchanged)
         {
-            // Soft deactivate: don't call D3D12_Configure(Enabled: false) as it
-            // deadlocks FSR FG's swapchain wrapper. Just set _isActive = false.
-            // FGPresent will bypass FG processing, and after the 10-frame pause
-            // the Activate() call below will set _isActive = true again.
-            if (_isActive)
+            if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
             {
-                LOG_INFO("FGchanged, soft deactivating (no D3D12_Configure)");
-                _isActive = false;
+                // Soft deactivate: don't call D3D12_Configure(Enabled: false) as it
+                // deadlocks FSR FG's swapchain wrapper in some games.
+                if (_isActive)
+                {
+                    LOG_INFO("FGchanged, soft deactivating (no D3D12_Configure)");
+                    _isActive = false;
+                }
+            }
+            else
+            {
+                Deactivate();
             }
 
             // Pause for 10 frames
@@ -1279,10 +1307,16 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
             // Destroy if Swapchain has a change destroy FG Context too
             if (State::Instance().SCchanged)
             {
-                // DestroyFGContext calls Deactivate internally, which also
-                // deadlocks. Skip for now — context will be recreated if needed.
-                LOG_WARN("SCchanged set but skipping DestroyFGContext to avoid deadlock");
-                // DestroyFGContext();
+                if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+                {
+                    // DestroyFGContext calls Deactivate internally, which also
+                    // deadlocks in games with SoftFGToggle. Skip for now.
+                    LOG_WARN("SCchanged set but skipping DestroyFGContext (SoftFGToggle)");
+                }
+                else
+                {
+                    DestroyFGContext();
+                }
             }
         }
 
@@ -1291,13 +1325,17 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     }
     else if (IsActive())
     {
-        // Don't call Deactivate() here — it calls D3D12_Configure(Enabled: false)
-        // which deadlocks FSR FG's swapchain wrapper during active rendering.
-        // Instead, just set _isActive = false directly. FGPresent already
-        // checks IsActive() and bypasses all FG processing when inactive,
-        // so no Dispatch() calls happen and no frames are generated.
-        LOG_INFO("FG disabled by user, setting _isActive = false (soft deactivate)");
-        _isActive = false;
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+        {
+            // Soft deactivate: don't call D3D12_Configure(Enabled: false) as it
+            // deadlocks FSR FG's swapchain wrapper in some games.
+            LOG_INFO("FG disabled by user, soft deactivate (no D3D12_Configure)");
+            _isActive = false;
+        }
+        else
+        {
+            Deactivate();
+        }
 
         State::Instance().ClearCapturedHudlesses = true;
         Hudfix_Dx12::ResetCounters();
@@ -1721,9 +1759,16 @@ bool FSRFG_Dx12::Present()
 
     if ((_fgFramePresentId - _lastFGFramePresentId) > 3 && IsActive() && !_waitingNewFrameData)
     {
-        LOG_DEBUG("Pausing FG (soft)");
-        // Soft deactivate to avoid D3D12_Configure deadlock
-        _isActive = false;
+        LOG_DEBUG("Pausing FG");
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+        {
+            // Soft deactivate to avoid D3D12_Configure deadlock
+            _isActive = false;
+        }
+        else
+        {
+            Deactivate();
+        }
         _waitingNewFrameData = true;
         return false;
     }

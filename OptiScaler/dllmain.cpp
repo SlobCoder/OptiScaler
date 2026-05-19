@@ -1231,6 +1231,9 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::PregmataFixDLSSModes)
         stringQuirks.push_back("Fix DLSS quality selection in Pragmata");
 
+    if (quirks & GameQuirk::SoftFGToggle)
+        stringQuirks.push_back("Soft FG toggle (no D3D12_Configure)");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);

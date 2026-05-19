@@ -116,13 +116,21 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     {
         if (state.currentFG != nullptr && state.currentFG->IsActive() && state.activeFgInput == FGInput::Upscaler)
         {
-            // Don't destroy FG context during upscaler switch — it causes
-            // FSR FG's swapchain wrapper to deadlock. Instead, set the
-            // transition flag and let FG stay active. FG will pick up
-            // the new upscaler output when it becomes available.
-            LOG_INFO("Upscaler switch: keeping FG active (upscalerTransitionActive)");
-            state.upscalerTransitionActive = true;
-            // Don't set FGchanged or call DestroyFGContext
+            if (state.gameQuirks & GameQuirk::SoftFGToggle)
+            {
+                // SoftFGToggle: don't destroy FG context during upscaler switch —
+                // it deadlocks. Instead, set the transition flag and let FG stay
+                // active. FG will pick up the new upscaler output when available.
+                LOG_INFO("Upscaler switch: keeping FG active (upscalerTransitionActive)");
+                state.upscalerTransitionActive = true;
+            }
+            else
+            {
+                // Original path for other games
+                state.currentFG->DestroyFGContext();
+                state.FGchanged = true;
+                state.ClearCapturedHudlesses = true;
+            }
         }
 
         if (contextData->feature != nullptr)

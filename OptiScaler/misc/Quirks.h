@@ -60,8 +60,9 @@ enum class GameQuirk : uint64_t
     ForceCreateD3D12Device,
     ForceDepthD32S8,
     PregmataFixDLSSModes,
+    SoftFGToggle, // FSR FG's D3D12_Configure deadlocks on state changes — use direct _isActive flag instead
     // Don't forget to add the new entry to printQuirks
-    _
+_
 };
 
 struct QuirkEntry
@@ -420,7 +421,8 @@ static const QuirkEntry quirkTable[] = {
     // Fall of Avalon (Unity)
     // Save thumbnails cause resolution drop (320x180) which destroys/recreates FG context
     // resulting in broken frame tracking and crash
-    QUIRK_ENTRY("fall of avalon.exe", GameQuirk::FastFeatureReset, GameQuirk::ForceAutoExposure),
+    // SoftFGToggle: FSR FG's swapchain wrapper deadlocks on D3D12_Configure during active rendering
+    QUIRK_ENTRY("fall of avalon.exe", GameQuirk::FastFeatureReset, GameQuirk::ForceAutoExposure, GameQuirk::SoftFGToggle),
 
     // VULKAN
     // ------
