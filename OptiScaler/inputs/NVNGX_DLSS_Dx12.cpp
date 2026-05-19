@@ -771,8 +771,7 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
         // FGchanged to avoid FSR FG deadlock. Only applies to games with the quirk.
         // Without the quirk, FGchanged is set normally for all games.
         bool fgAlreadyActive = (state.currentFG != nullptr && state.currentFG->IsActive());
-        bool useSoftToggle = (state.gameQuirks & GameQuirk::SoftFGToggle);
-        if (fgAlreadyActive && useSoftToggle)
+        if (fgAlreadyActive && (state.gameQuirks & GameQuirk::SoftFGToggle))
         {
             // Upscaler re-creation while FG is running (resolution change).
             // Set transition flag instead of FGchanged to avoid FSR FG deadlock.

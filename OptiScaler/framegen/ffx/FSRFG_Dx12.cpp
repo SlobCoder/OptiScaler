@@ -2,7 +2,7 @@
 
 #include "FSRFG_Dx12.h"
 #include <State.h>
-#include <Quirks.h>
+#include <misc/Quirks.h>
 
 #include <hudfix/Hudfix_Dx12.h>
 #include <menu/menu_overlay_dx.h>
