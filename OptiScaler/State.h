@@ -126,6 +126,12 @@ class State
     // Cleared when the replacement normal-res upscaler is created.
     bool thumbnailSaveActive = false;
 
+    // Set during any upscaler transition (resolution change, upscaler switch)
+    // to suppress FGchanged. Prevents FSR FG's swapchain wrapper from
+    // deadlocking on Deactivate/Reactivate during active rendering.
+    // Sequence: new feature created → old feature released → flag cleared.
+    bool upscalerTransitionActive = false;
+
     bool FGcaptureResources = false;
     size_t FGcapturedResourceCount = 0;
     bool FGresetCapturedResources = false;

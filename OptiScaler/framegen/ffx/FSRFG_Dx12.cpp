@@ -1311,6 +1311,26 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     }
 
     State::Instance().SCchanged = false;
+
+    // Safety net: clear upscalerTransitionActive after 60 frames (~1 second)
+    // in case the normal cleanup path was missed (e.g. game didn't release old feature)
+    static UINT64 transitionStartFrame = 0;
+    if (State::Instance().upscalerTransitionActive)
+    {
+        if (transitionStartFrame == 0)
+            transitionStartFrame = _frameCount;
+        else if (_frameCount > transitionStartFrame + 60)
+        {
+            LOG_WARN("upscalerTransitionActive still set after 60 frames, clearing (transitionStartFrame={}, currentFrame={})",
+                     transitionStartFrame, _frameCount);
+            State::Instance().upscalerTransitionActive = false;
+            transitionStartFrame = 0;
+        }
+    }
+    else
+    {
+        transitionStartFrame = 0;
+    }
 }
 
 void FSRFG_Dx12::ReleaseObjects()

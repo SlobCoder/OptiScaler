@@ -116,9 +116,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     {
         if (state.currentFG != nullptr && state.currentFG->IsActive() && state.activeFgInput == FGInput::Upscaler)
         {
-            state.currentFG->DestroyFGContext();
-            state.FGchanged = true;
-            state.ClearCapturedHudlesses = true;
+            // Don't destroy FG context during upscaler switch — it causes
+            // FSR FG's swapchain wrapper to deadlock. Instead, set the
+            // transition flag and let FG stay active. FG will pick up
+            // the new upscaler output when it becomes available.
+            LOG_INFO("Upscaler switch: keeping FG active (upscalerTransitionActive)");
+            state.upscalerTransitionActive = true;
+            // Don't set FGchanged or call DestroyFGContext
         }
 
         if (contextData->feature != nullptr)
@@ -244,6 +248,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 
     // if initial feature can't be inited
     state.currentFeature = contextData->feature.get();
+
+    // Clear transition flag now that the new upscaler is fully initialized
+    if (state.upscalerTransitionActive)
+    {
+        LOG_INFO("Upscaler switch complete, clearing upscalerTransitionActive");
+        state.upscalerTransitionActive = false;
+    }
 
     if (state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler)
         state.currentFG->UpdateTarget();

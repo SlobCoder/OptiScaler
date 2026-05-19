@@ -736,6 +736,11 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     // We must suppress FGchanged for ALL THREE steps, not just step 1,
     // otherwise the replacement upscaler triggers FG deactivation → freeze.
     // The flag is set in step 1 and cleared in step 3.
+    //
+    // Also suppress FGchanged during resolution changes and upscaler transitions.
+    // FSR FG's swapchain wrapper deadlocks when Deactivate is called while
+    // actively rendering. Instead of deactivate→pause→reactivate, we keep
+    // FG running and let it pick up the new upscaler output naturally.
     if (feature != nullptr && feature->DisplayWidth() <= 640 && feature->DisplayHeight() <= 360)
     {
         LOG_INFO("Thumbnail feature ({}x{}), setting thumbnailSaveActive and skipping FGchanged",
@@ -750,9 +755,39 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
         state.thumbnailSaveActive = false;
         // Don't set FGchanged — FG stays active throughout the save sequence
     }
+    else if (state.upscalerTransitionActive)
+    {
+        // This is the new feature after a resolution change or upscaler switch.
+        // The old feature will be released shortly — skip FGchanged to avoid deadlock.
+        LOG_INFO("New upscaler created during transition ({}x{}), FG stays active",
+                 feature != nullptr ? feature->DisplayWidth() : 0,
+                 feature != nullptr ? feature->DisplayHeight() : 0);
+        // Don't set FGchanged — FG stays active
+    }
     else
     {
-        state.FGchanged = true;
+        // Check if FG is already active. If so, this is a resolution change or
+        // upscaler re-creation — suppress FGchanged to avoid FSR FG deadlock.
+        // If FG is not yet active (first feature), set FGchanged normally.
+        bool fgAlreadyActive = (state.currentFG != nullptr && state.currentFG->IsActive());
+        if (fgAlreadyActive)
+        {
+            // Upscaler re-creation while FG is running (resolution change).
+            // Set transition flag instead of FGchanged to avoid FSR FG deadlock.
+            state.upscalerTransitionActive = true;
+            LOG_INFO("Upscaler re-created while FG active ({}x{}), setting upscalerTransitionActive",
+                     feature != nullptr ? feature->DisplayWidth() : 0,
+                     feature != nullptr ? feature->DisplayHeight() : 0);
+        }
+        else
+        {
+            // First upscaler creation or FG not yet running — set FGchanged normally
+            // so FG can be initialized.
+            state.FGchanged = true;
+            LOG_INFO("New upscaler feature ({}x{}), setting FGchanged",
+                     feature != nullptr ? feature->DisplayWidth() : 0,
+                     feature != nullptr ? feature->DisplayHeight() : 0);
+        }
     }
 
     return NVSDK_NGX_Result_Success;
@@ -849,11 +884,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 
     auto handleId = InHandle->Id;
 
-    // Check if we're in a save thumbnail sequence. If the thumbnailSaveActive
-    // flag is set, or a thumbnail feature still exists in contexts, skip FG cleanup.
-    // The flag covers the case where the thumbnail was already released but the
-    // replacement upscaler hasn't been created yet.
-    bool skipFgCleanup = state.thumbnailSaveActive;
+    // Check if we should skip FG cleanup during this release.
+    // Skip during:
+    //   1. Save thumbnail sequences (thumbnailSaveActive or thumbnail feature exists)
+    //   2. Upscaler transitions (resolution change, upscaler switch)
+    // In both cases, FG stays active to avoid FSR FG swapchain deadlocks.
+    bool skipFgCleanup = state.thumbnailSaveActive || state.upscalerTransitionActive;
     if (!skipFgCleanup)
     {
         for (auto& [id, ctx] : Dx12Contexts)
@@ -870,7 +906,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     }
     else
     {
-        LOG_INFO("thumbnailSaveActive flag set during release of {}, skipping FG cleanup", handleId);
+        LOG_INFO("Transition flag active during release of {} (thumbnail={}, upscaler={}), skipping FG cleanup",
+                 handleId, state.thumbnailSaveActive, state.upscalerTransitionActive);
     }
 
     if (!skipFgCleanup)
@@ -882,7 +919,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     // reduced resolution (e.g. Unity games like Fall of Avalon).
     // The FG context is preserved and reactivated when the upscaler is recreated
     // at normal resolution. Full destruction still happens on shutdown or swapchain change.
-    // During a save thumbnail sequence, skip FG cleanup entirely.
+    // During save thumbnail or upscaler transition sequences, skip FG cleanup entirely.
     if (state.currentFG != nullptr && state.activeFgInput == FGInput::Upscaler && !skipFgCleanup)
     {
         if (state.currentFG->IsActive())
@@ -949,6 +986,15 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
         // Fallback Error Handling
         if (!shutdown)
             LOG_ERROR("can't release feature with id {0}!", handleId);
+    }
+
+    // If this was an upscaler transition (resolution change), clear the flag now.
+    // The old feature has been released and a new one should already exist.
+    // If the new feature hasn't been created yet, the flag stays until it is.
+    if (state.upscalerTransitionActive && state.currentFeature != nullptr)
+    {
+        LOG_INFO("Upscaler transition complete, clearing upscalerTransitionActive");
+        state.upscalerTransitionActive = false;
     }
 
     return NVSDK_NGX_Result_Success;
