@@ -1109,6 +1109,19 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
             return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
     }
 
+    // If FG is not active (e.g. deactivated during save thumbnail), bypass all FG processing
+    // to prevent deadlocks when the game captures a screenshot for the save file
+    IFGFeature* fg = state.currentFG;
+    if (fg == nullptr || !fg->IsActive() || fg->IsPaused())
+    {
+        Hudfix_Dx12::PresentEnd();
+
+        if (pPresentParameters == nullptr)
+            return o_FGSCPresent(This, SyncInterval, Flags);
+        else
+            return o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+    }
+
     auto willPresent = (Flags & DXGI_PRESENT_TEST) == 0;
 
     if (willPresent)
@@ -1131,8 +1144,6 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         InputCommon::mark_present_start(device);
 #endif
     }
-
-    IFGFeature* fg = state.currentFG;
 
     if (fg != nullptr && willPresent)
     {

@@ -2,6 +2,7 @@
 
 #include "FSRFG_Dx12.h"
 #include <State.h>
+#include <misc/Quirks.h>
 
 #include <hudfix/Hudfix_Dx12.h>
 #include <menu/menu_overlay_dx.h>
@@ -775,7 +776,7 @@ void* FSRFG_Dx12::SwapchainContext()
 void FSRFG_Dx12::DestroyFGContext()
 {
     _frameCount = 1;
-    // _lastDispatchedFrame = 0;
+    _lastDispatchedFrame = 0;
     _version = {};
 
     LOG_DEBUG("");
@@ -1170,23 +1171,35 @@ void FSRFG_Dx12::Activate()
 {
     if (_fgContext != nullptr && _swapChain != nullptr && !_isActive)
     {
-        ffxConfigureDescFrameGeneration fgConfig = {};
-        fgConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
-        fgConfig.frameGenerationEnabled = true;
-        fgConfig.swapChain = _swapChain;
-        fgConfig.presentCallback = nullptr;
-        fgConfig.HUDLessColor = FfxApiResource({});
-
-        auto result = FfxApiProxy::D3D12_Configure(&_fgContext, &fgConfig.header);
-
-        if (result == FFX_API_RETURN_OK)
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
         {
+            // Soft activate: don't call D3D12_Configure(Enabled: true) as it
+            // deadlocks FSR FG's swapchain wrapper in some games.
             _isActive = true;
             _lastDispatchedFrame = 0;
+            LOG_INFO("Soft activate: _isActive = true (no D3D12_Configure)");
         }
+        else
+        {
+            // Original path: tell FSR FG to enable frame generation
+            ffxConfigureDescFrameGeneration fgConfig = {};
+            fgConfig.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+            fgConfig.frameGenerationEnabled = true;
+            fgConfig.swapChain = _swapChain;
+            fgConfig.presentCallback = nullptr;
+            fgConfig.HUDLessColor = FfxApiResource({});
 
-        LOG_INFO("D3D12_Configure Enabled: true, result: {} ({})", magic_enum::enum_name((FfxApiReturnCodes) result),
-                 (UINT) result);
+            auto result = FfxApiProxy::D3D12_Configure(&_fgContext, &fgConfig.header);
+
+            if (result == FFX_API_RETURN_OK)
+            {
+                _isActive = true;
+                _lastDispatchedFrame = 0;
+            }
+
+            LOG_INFO("D3D12_Configure Enabled: true, result: {} ({})", magic_enum::enum_name((FfxApiReturnCodes) result),
+                     (UINT) result);
+        }
     }
 }
 
@@ -1294,14 +1307,38 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
         // If there is a change deactivate it
         else if (State::Instance().fgChanged)
         {
-            Deactivate();
+            if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+            {
+                // Soft deactivate: don't call D3D12_Configure(Enabled: false) as it
+                // deadlocks FSR FG's swapchain wrapper in some games.
+                if (_isActive)
+                {
+                    LOG_INFO("FGchanged, soft deactivating (no D3D12_Configure)");
+                    _isActive = false;
+                }
+            }
+            else
+            {
+                Deactivate();
+            }
 
             // Pause for 10 frames
             UpdateTarget();
 
             // Destroy if Swapchain has a change destroy FG Context too
             if (State::Instance().scChanged)
-                DestroyFGContext();
+            {
+                if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+                {
+                    // DestroyFGContext calls Deactivate internally, which also
+                    // deadlocks in games with SoftFGToggle. Skip for now.
+                    LOG_WARN("scChanged set but skipping DestroyFGContext (SoftFGToggle)");
+                }
+                else
+                {
+                    DestroyFGContext();
+                }
+            }
         }
 
         if (_fgContext != nullptr && State::Instance().activeFgInput == FGInput::Upscaler && !IsPaused() && !IsActive())
@@ -1309,7 +1346,17 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     }
     else if (IsActive())
     {
-        Deactivate();
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+        {
+            // Soft deactivate: don't call D3D12_Configure(Enabled: false) as it
+            // deadlocks FSR FG's swapchain wrapper in some games.
+            LOG_INFO("FG disabled by user, soft deactivate (no D3D12_Configure)");
+            _isActive = false;
+        }
+        else
+        {
+            Deactivate();
+        }
 
         State::Instance().clearCapturedHudlesses = true;
         Hudfix_Dx12::ResetCounters();
@@ -1332,6 +1379,26 @@ void FSRFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     }
 
     State::Instance().scChanged = false;
+
+    // Safety net: clear upscalerTransitionActive after 60 frames (~1 second)
+    // in case the normal cleanup path was missed (e.g. game didn't release old feature)
+    static UINT64 transitionStartFrame = 0;
+    if (State::Instance().upscalerTransitionActive)
+    {
+        if (transitionStartFrame == 0)
+            transitionStartFrame = _frameCount;
+        else if (_frameCount > transitionStartFrame + 60)
+        {
+            LOG_WARN("upscalerTransitionActive still set after 60 frames, clearing (transitionStartFrame={}, currentFrame={})",
+                     transitionStartFrame, _frameCount);
+            State::Instance().upscalerTransitionActive = false;
+            transitionStartFrame = 0;
+        }
+    }
+    else
+    {
+        transitionStartFrame = 0;
+    }
 }
 
 void FSRFG_Dx12::ReleaseObjects()
@@ -1756,7 +1823,15 @@ bool FSRFG_Dx12::Present()
     if ((_fgFramePresentId - _lastFGFramePresentId) > 3 && IsActive() && !_waitingNewFrameData)
     {
         LOG_DEBUG("Pausing FG");
-        Deactivate();
+        if (State::Instance().gameQuirks & GameQuirk::SoftFGToggle)
+        {
+            // Soft deactivate to avoid D3D12_Configure deadlock
+            _isActive = false;
+        }
+        else
+        {
+            Deactivate();
+        }
         _waitingNewFrameData = true;
         return false;
     }

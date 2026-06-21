@@ -143,6 +143,18 @@ class State
     size_t fgCapturedResourceCount = 0;
     bool fgResetCapturedResources = false;
     bool fgOnlyUseCapturedResources = false;
+    // Set when a save thumbnail upscaler (<=640x360) is created.
+    // Stays true through the entire thumbnail sequence (thumbnail create →
+    // main upscaler release → replacement upscaler create) to prevent
+    // FGchanged from being set during the save operation.
+    // Cleared when the replacement normal-res upscaler is created.
+    bool thumbnailSaveActive = false;
+
+    // Set during any upscaler transition (resolution change, upscaler switch)
+    // to suppress FGchanged. Prevents FSR FG's swapchain wrapper from
+    // deadlocking on Deactivate/Reactivate during active rendering.
+    // Sequence: new feature created → old feature released → flag cleared.
+    bool upscalerTransitionActive = false;
 
     bool fsrfgFramePaceTuningChanged = false;
     bool fsrfgInputActive = false;
